@@ -409,6 +409,11 @@ void AsyncMqttClient::_handleQueue() {
       // the next packet as this one's tail and loses framing, which surfaces as malformed
       // packets, bogus "QoS=0 and DUP=1", and keepalive reaps. Nothing was sent, so retry
       // on the next _onAck()/_onPoll() rather than spinning here.
+      //
+      // log_e, not log_w: the common build flavors compile at CORE_DEBUG_LEVEL=1, where
+      // anything below error is stripped and this would report nothing on the firmware
+      // people actually run. A write that silently vanished is an error by any reading.
+      if (realSent != willSend) log_e("short write %u/%u, requeueing remainder", realSent, willSend);
       if (realSent == 0) break;
       #if ASYNC_TCP_SSL_ENABLED
       _sent += willSend;  // add() reports encrypted length, so count what we asked for
