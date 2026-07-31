@@ -403,8 +403,18 @@ void AsyncMqttClient::_handleQueue() {
       // So we calculate the amount to be written ourselves.
       size_t willSend = std::min(_head->size() - _sent, _client.space());
       size_t realSent = _client.add(reinterpret_cast<const char*>(_head->data(_sent)), willSend, ASYNC_WRITE_FLAG_COPY);  // flag is set by LWIP anyway, added for clarity
-      _sent += willSend;
-      (void)realSent;
+      // add() takes less than asked when tcp_write() hits ERR_MEM (returns 0) or when
+      // sndbuf shrank since space() was read (returns a short count). Advancing _sent by
+      // the requested amount drops those bytes for good: the broker then reads the head of
+      // the next packet as this one's tail and loses framing, which surfaces as malformed
+      // packets, bogus "QoS=0 and DUP=1", and keepalive reaps. Nothing was sent, so retry
+      // on the next _onAck()/_onPoll() rather than spinning here.
+      if (realSent == 0) break;
+      #if ASYNC_TCP_SSL_ENABLED
+      _sent += willSend;  // add() reports encrypted length, so count what we asked for
+      #else
+      _sent += realSent;
+      #endif
       _client.send();
       _lastClientActivity = millis();
       _lastPingRequestTime = 0;
