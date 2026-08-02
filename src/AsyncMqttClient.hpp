@@ -5,8 +5,15 @@
 
 #include "Arduino.h"
 
+// Heap headroom that must remain *after* allocating a packet, guarding against
+// heap eaten by other subsystems (BLE/WiFi), not against our own queue.
 #ifndef MQTT_MIN_FREE_MEMORY
 #define MQTT_MIN_FREE_MEMORY 4096
+#endif
+
+// Cap on bytes sitting in the outgoing queue. This is the actual backpressure.
+#ifndef MQTT_MAX_QUEUE_BYTES
+#define MQTT_MAX_QUEUE_BYTES 8192
 #endif
 
 #ifdef ESP32
@@ -59,6 +66,7 @@ class AsyncMqttClient {
   AsyncMqttClient& setClientId(const char* clientId);
   AsyncMqttClient& setCleanSession(bool cleanSession);
   AsyncMqttClient& setMaxTopicLength(uint16_t maxTopicLength);
+  AsyncMqttClient& setMaxQueueSize(size_t bytes);
   AsyncMqttClient& setCredentials(const char* username, const char* password = nullptr);
   AsyncMqttClient& setWill(const char* topic, uint8_t qos, bool retain, const char* payload = nullptr, size_t length = 0);
   AsyncMqttClient& setServer(IPAddress ip, uint16_t port);
@@ -84,12 +92,15 @@ class AsyncMqttClient {
   bool clearQueue();  // Not MQTT compliant!
 
   const char* getClientId() const;
+  size_t queueSize() const;  // bytes currently queued for sending
 
  private:
   AsyncClient _client;
   AsyncMqttClientInternals::OutPacket* _head;
   AsyncMqttClientInternals::OutPacket* _tail;
   size_t _sent;
+  size_t _queuedBytes;  // sum of size() of every packet in the queue
+  size_t _maxQueueBytes;
   enum {
     CONNECTING,
     CONNECTED,

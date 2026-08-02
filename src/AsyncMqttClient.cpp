@@ -5,6 +5,8 @@ AsyncMqttClient::AsyncMqttClient()
 , _head(nullptr)
 , _tail(nullptr)
 , _sent(0)
+, _queuedBytes(0)
+, _maxQueueBytes(MQTT_MAX_QUEUE_BYTES)
 , _state(DISCONNECTED)
 , _disconnectReason(AsyncMqttClientDisconnectReason::TCP_DISCONNECTED)
 , _lastClientActivity(0)
@@ -92,6 +94,11 @@ AsyncMqttClient& AsyncMqttClient::setMaxTopicLength(uint16_t maxTopicLength) {
   _parsingInformation.maxTopicLength = maxTopicLength;
   delete[] _parsingInformation.topicBuffer;
   _parsingInformation.topicBuffer = new char[maxTopicLength + 1];
+  return *this;
+}
+
+AsyncMqttClient& AsyncMqttClient::setMaxQueueSize(size_t bytes) {
+  _maxQueueBytes = bytes;
   return *this;
 }
 
@@ -352,6 +359,7 @@ void AsyncMqttClient::_insert(AsyncMqttClientInternals::OutPacket* packet) {
   // The queue therefore cannot be empty and _head points to this PUBLISH packet.
   SEMAPHORE_TAKE();
   log_i("new insert #%u", packet->packetType());
+  _queuedBytes += packet->size();
   packet->next = _head->next;
   _head->next = packet;
   if (_head == _tail) {  // PUB packet is the only one in the queue
@@ -367,6 +375,7 @@ void AsyncMqttClient::_addFront(AsyncMqttClientInternals::OutPacket* packet) {
   // In both cases, _head should always point to the CONNECT packet afterwards.
   SEMAPHORE_TAKE();
   log_i("new front #%u", packet->packetType());
+  _queuedBytes += packet->size();
   if (_head == nullptr) {
     _tail = packet;
   } else {
@@ -380,6 +389,7 @@ void AsyncMqttClient::_addFront(AsyncMqttClientInternals::OutPacket* packet) {
 void AsyncMqttClient::_addBack(AsyncMqttClientInternals::OutPacket* packet) {
   SEMAPHORE_TAKE();
   log_i("new back #%u", packet->packetType());
+  _queuedBytes += packet->size();
   if (!_tail) {
     _head = packet;
   } else {
@@ -409,11 +419,6 @@ void AsyncMqttClient::_handleQueue() {
       // the next packet as this one's tail and loses framing, which surfaces as malformed
       // packets, bogus "QoS=0 and DUP=1", and keepalive reaps. Nothing was sent, so retry
       // on the next _onAck()/_onPoll() rather than spinning here.
-      //
-      // log_e, not log_w: the common build flavors compile at CORE_DEBUG_LEVEL=1, where
-      // anything below error is stripped and this would report nothing on the firmware
-      // people actually run. A write that silently vanished is an error by any reading.
-      if (realSent != willSend) log_e("short write %u/%u, requeueing remainder", realSent, willSend);
       if (realSent == 0) break;
       #if ASYNC_TCP_SSL_ENABLED
       _sent += willSend;  // add() reports encrypted length, so count what we asked for
@@ -440,6 +445,9 @@ void AsyncMqttClient::_handleQueue() {
         AsyncMqttClientInternals::OutPacket* tmp = _head;
         _head = _head->next;
         if (!_head) _tail = nullptr;
+        // clamped: a drifted count would wrap and block publishing forever
+        size_t packetSize = tmp->size();
+        _queuedBytes = (_queuedBytes > packetSize) ? _queuedBytes - packetSize : 0;
         delete tmp;
         _sent = 0;
       } else {
@@ -460,6 +468,10 @@ void AsyncMqttClient::_clearQueue(bool keepSessionData) {
   AsyncMqttClientInternals::OutPacket* packet = _head;
   _head = nullptr;
   _tail = nullptr;
+  // Queue is detached: zero the count here so the keepSessionData path below can
+  // re-add survivors through _addBack() without double-counting. The delete
+  // branches below must NOT subtract.
+  _queuedBytes = 0;
 
   while (packet) {
     /* MQTT spec 3.1.2.4 Clean Session:
@@ -751,7 +763,20 @@ uint16_t AsyncMqttClient::unsubscribe(const char* topic) {
 }
 
 uint16_t AsyncMqttClient::publish(const char* topic, uint8_t qos, bool retain, const char* payload, size_t length, bool dup, uint16_t message_id) {
-  if (_state != CONNECTED || GET_FREE_MEMORY() < MQTT_MIN_FREE_MEMORY) return 0;
+  if (_state != CONNECTED) return 0;
+
+  // Mirrors neededSpace in PublishOutPacket's ctor: fixed header (up to 5) + topic length (2)
+  size_t payloadLength = (payload != nullptr && length == 0) ? strlen(payload) : length;
+  size_t needed = 7 + strlen(topic) + payloadLength + (qos ? 2 : 0);
+
+  if (_queuedBytes + needed > _maxQueueBytes) {
+    log_w("PUBLISH dropped, queue full: %u+%u > %u", _queuedBytes, needed, _maxQueueBytes);
+    return 0;
+  }
+  if (GET_FREE_MEMORY() < needed + MQTT_MIN_FREE_MEMORY) {
+    log_w("PUBLISH dropped, low heap: %u < %u", GET_FREE_MEMORY(), needed + MQTT_MIN_FREE_MEMORY);
+    return 0;
+  }
   log_i("PUBLISH");
 
   AsyncMqttClientInternals::OutPacket* msg = new AsyncMqttClientInternals::PublishOutPacket(topic, qos, retain, payload, length);
@@ -767,4 +792,8 @@ bool AsyncMqttClient::clearQueue() {
 
 const char* AsyncMqttClient::getClientId() const {
   return _clientId;
+}
+
+size_t AsyncMqttClient::queueSize() const {
+  return _queuedBytes;
 }
