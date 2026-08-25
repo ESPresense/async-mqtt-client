@@ -90,6 +90,11 @@ AsyncMqttClient& AsyncMqttClient::setCleanSession(bool cleanSession) {
   return *this;
 }
 
+AsyncMqttClient& AsyncMqttClient::setMaxQueueSize(size_t bytes) {
+  _maxQueueBytes = bytes;
+  return *this;
+}
+
 AsyncMqttClient& AsyncMqttClient::setMaxTopicLength(uint16_t maxTopicLength) {
   _parsingInformation.maxTopicLength = maxTopicLength;
   delete[] _parsingInformation.topicBuffer;
