@@ -1,7 +1,7 @@
 #pragma once
 
 #include <cstring>  // strlen
-#include <vector>
+#include <memory>   // std::unique_ptr
 
 #include "OutPacket.hpp"
 #include "../../Flags.hpp"
@@ -15,9 +15,15 @@ class PublishOutPacket : public OutPacket {
   const uint8_t* data(size_t index = 0) const;
   size_t size() const;
 
+  bool valid() const { return _data != nullptr; }  // false if the (nothrow) buffer alloc failed
+
   void setDup();  // you cannot unset dup
 
  private:
-  std::vector<uint8_t> _data;
+  // Owning buffer rather than std::vector: consumers build with -fno-exceptions, where a
+  // failed vector reserve/insert is an abort() rather than a failed publish. Allocated
+  // nothrow, so a null buffer is reported via valid() and publish() drops the message.
+  std::unique_ptr<uint8_t[]> _data;
+  size_t _size = 0;
 };
 }  // namespace AsyncMqttClientInternals

@@ -1,5 +1,8 @@
 #include "Publish.hpp"
 
+#include <cstring>  // memcpy
+#include <new>      // std::nothrow
+
 using AsyncMqttClientInternals::PublishOutPacket;
 
 PublishOutPacket::PublishOutPacket(const char* topic, uint8_t qos, bool retain, const char* payload, size_t length) {
@@ -39,31 +42,38 @@ PublishOutPacket::PublishOutPacket(const char* topic, uint8_t qos, bool retain, 
   if (qos != 0) neededSpace += 2;
   if (payload != nullptr) neededSpace += payloadLength;
 
-  _data.reserve(neededSpace);
+  // Nothrow allocation: a failure leaves _data == nullptr / _size == 0 (valid() == false), and
+  // AsyncMqttClient::publish() drops the message instead of aborting under memory pressure.
+  _data.reset(new (std::nothrow) uint8_t[neededSpace]);
+  if (!_data) return;
 
-  _packetId = (qos !=0) ? _getNextPacketId() : 1;
+  _packetId = (qos != 0) ? _getNextPacketId() : 1;
   char packetIdBytes[2];
   packetIdBytes[0] = _packetId >> 8;
   packetIdBytes[1] = _packetId & 0xFF;
 
-  _data.insert(_data.end(), fixedHeader, fixedHeader + 1 + remainingLengthLength);
-  _data.insert(_data.end(), topicLengthBytes, topicLengthBytes + 2);
-  _data.insert(_data.end(), topic, topic + topicLength);
+  size_t o = 0;
+  memcpy(_data.get() + o, fixedHeader, 1 + remainingLengthLength); o += 1 + remainingLengthLength;
+  memcpy(_data.get() + o, topicLengthBytes, 2); o += 2;
+  memcpy(_data.get() + o, topic, topicLength); o += topicLength;
   if (qos != 0) {
-    _data.insert(_data.end(), packetIdBytes, packetIdBytes + 2);
+    memcpy(_data.get() + o, packetIdBytes, 2); o += 2;
     _released = false;
   }
-  if (payload != nullptr) _data.insert(_data.end(), payload, payload + payloadLength);
+  if (payload != nullptr && payloadLength > 0) {
+    memcpy(_data.get() + o, payload, payloadLength); o += payloadLength;
+  }
+  _size = o;
 }
 
 const uint8_t* PublishOutPacket::data(size_t index) const {
-  return &_data.data()[index];
+  return _data.get() + index;
 }
 
 size_t PublishOutPacket::size() const {
-  return _data.size();
+  return _size;
 }
 
 void PublishOutPacket::setDup() {
-  _data[0] |= AsyncMqttClientInternals::HeaderFlag.PUBLISH_DUP;
+  if (_data) _data[0] |= AsyncMqttClientInternals::HeaderFlag.PUBLISH_DUP;
 }

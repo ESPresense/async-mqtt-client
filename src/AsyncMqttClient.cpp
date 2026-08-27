@@ -1,4 +1,5 @@
 #include "AsyncMqttClient.hpp"
+#include <new>  // std::nothrow
 
 AsyncMqttClient::AsyncMqttClient()
 : _client()
@@ -784,7 +785,12 @@ uint16_t AsyncMqttClient::publish(const char* topic, uint8_t qos, bool retain, c
   }
   log_i("PUBLISH");
 
-  AsyncMqttClientInternals::OutPacket* msg = new AsyncMqttClientInternals::PublishOutPacket(topic, qos, retain, payload, length);
+  auto* msg = new (std::nothrow) AsyncMqttClientInternals::PublishOutPacket(topic, qos, retain, payload, length);
+  if (msg == nullptr || !msg->valid()) {  // object alloc or packet-buffer alloc failed under pressure
+    delete msg;
+    log_w("PUBLISH dropped, packet allocation failed");
+    return 0;
+  }
   _addBack(msg);
   return msg->packetId();
 }
