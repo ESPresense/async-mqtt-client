@@ -103,11 +103,6 @@ AsyncMqttClient& AsyncMqttClient::setMaxTopicLength(uint16_t maxTopicLength) {
   return *this;
 }
 
-AsyncMqttClient& AsyncMqttClient::setMaxQueueSize(size_t bytes) {
-  _maxQueueBytes = bytes;
-  return *this;
-}
-
 AsyncMqttClient& AsyncMqttClient::setCredentials(const char* username, const char* password) {
   _username = username;
   _password = password;
