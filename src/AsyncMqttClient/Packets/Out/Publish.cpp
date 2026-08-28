@@ -1,7 +1,7 @@
 #include "Publish.hpp"
 
+#include <cstdlib>  // malloc
 #include <cstring>  // memcpy
-#include <new>      // std::nothrow
 
 using AsyncMqttClientInternals::PublishOutPacket;
 
@@ -42,9 +42,9 @@ PublishOutPacket::PublishOutPacket(const char* topic, uint8_t qos, bool retain, 
   if (qos != 0) neededSpace += 2;
   if (payload != nullptr) neededSpace += payloadLength;
 
-  // Nothrow allocation: a failure leaves _data == nullptr / _size == 0 (valid() == false), and
-  // AsyncMqttClient::publish() drops the message instead of aborting under memory pressure.
-  _data.reset(new (std::nothrow) uint8_t[neededSpace]);
+  // malloc, not new (std::nothrow) — see the note in the header. A failure leaves
+  // _data == nullptr / _size == 0 (valid() == false) and publish() drops the message.
+  _data.reset(static_cast<uint8_t*>(std::malloc(neededSpace)));
   if (!_data) return;
 
   _packetId = (qos != 0) ? _getNextPacketId() : 1;
